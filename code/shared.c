@@ -149,8 +149,10 @@ typedef double f64;
 typedef union { f32 F32; u32 U32; } ieee754_single;
 typedef union { f64 F64; u64 U64; } ieee754_double;
 
-typedef u8 b8;
+typedef u8  b8;
+typedef u16 b16;
 typedef u32 b32;
+typedef u64 b64;
 
 // ----------------------------------------------------------
 // NOTE(vak): Type size checks

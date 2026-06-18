@@ -20,13 +20,30 @@ typedef struct
     void*              UserData;
 } print_output;
 
+// NOTE(vak): Character
+
 local usize PrintCharacter(print_output Out, char Character);
 local usize PrintNewLine(print_output Out);
+
+// NOTE(vak): String
 
 local usize Print(print_output Out, string Message);
 local usize Println(print_output Out, string Message);
 
+// NOTE(vak): Boolean
+
 #define PrintBool(Out, Value) Print(Out, (Value) ? Str("true") : Str("false"))
+
+// NOTE(vak): Integer
+//
+// Use integer printing functions like this:
+//     PrintUInt(Out, 23871);
+//
+// Additional settings can be supplied by setting print_int_settings members
+// like this:
+//     PrintUInt(Out, 23871, .Padding = 10, .LeftPad = true);
+//
+// For more settings, see print_int_settings structure below
 
 #define PrintSInt(Out, ...) PrintInt(Out, (print_int_settings){(ssize)__VA_ARGS__, .Base = 10, .Signed = true })
 #define PrintUInt(Out, ...) PrintInt(Out, (print_int_settings){(ssize)__VA_ARGS__, .Base = 10})
@@ -41,22 +58,27 @@ local usize Println(print_output Out, string Message);
 
 typedef struct
 {
+    // NOTE(vak): Value should always be first
+    // as the first argument of any integer
+    // printing function is a value.
+
     ssize Value;
-    u16   Base;
-    u16   Padding;
 
     // NOTE(vak): Options
 
-    b32   LeftPad   : 1;
-    b32   ZeroPad   : 1;
-    b32   ForceSign : 1;
-    b32   BlankSign : 1;
-    b32   Prefix    : 1;
-    b32   Upper     : 1;
+    u64   Padding   : 32;
+    u64   Base      : 16;
+
+    b64   LeftPad   : 1; // NOTE(vak): Prints padding before integer
+    b64   ZeroPad   : 1; // NOTE(vak): Pads using '0' instead of ' '
+    b64   ForceSign : 1; // NOTE(vak): If positive, prints '+'
+    b64   BlankSign : 1; // NOTE(vak): If positive, prints ' '
+    b64   Prefix    : 1; // NOTE(vak): Print prefixes: '0b' (bin), '0o' (oct), '0x' (hex)
+    b64   Upper     : 1; // NOTE(vak): Enable uppercase letters for hexadecimal
 
     // NOTE(vak): Internal
 
-    b32   Signed    : 1;
+    b64   Signed    : 1; // NOTE(vak): Intepret 'Value' as a signed integer
 } print_int_settings;
 
 local usize PrintInt(print_output Out, print_int_settings Settings);
@@ -101,22 +123,23 @@ local usize PrintInt(print_output Out, print_int_settings Settings)
     usize Base    = Settings.Base;
     usize Padding = Settings.Padding;
 
-    b32 LeftPad   = Settings.LeftPad;
-    b32 ZeroPad   = Settings.ZeroPad;
-    b32 ForceSign = Settings.ForceSign;
-    b32 BlankSign = Settings.BlankSign;
-    b32 Prefix    = Settings.Prefix;
-    b32 Upper     = Settings.Upper;
-    b32 Signed    = Settings.Signed;
+    b32 LeftPad   = (b32) Settings.LeftPad;
+    b32 ZeroPad   = (b32) Settings.ZeroPad;
+    b32 ForceSign = (b32) Settings.ForceSign;
+    b32 BlankSign = (b32) Settings.BlankSign;
+    b32 Prefix    = (b32) Settings.Prefix;
+    b32 Upper     = (b32) Settings.Upper;
+    b32 Signed    = (b32) Settings.Signed;
 
     b32 IsNegative = (Signed) && (Value >> 63);
 
     if (IsNegative)
         Value = ~Value + 1; // NOTE(vak): Twos complement
 
-    // NOTE(vak): Checks
+    // NOTE(vak): Safety
     {
-        AlwaysAssert((Base >= 2) && (Base <= 16));
+        if ((Base < 2) || (Base > 16))
+            Base = 10;
     }
 
     // NOTE(vak): Prefix
@@ -133,7 +156,7 @@ local usize PrintInt(print_output Out, print_int_settings Settings)
         }
     }
 
-    // NOTE(vak): Translation to digits
+    // NOTE(vak): Conversion
 
     char Buffer[64] = {0};
     usize DigitCount = 0;
@@ -158,11 +181,13 @@ local usize PrintInt(print_output Out, print_int_settings Settings)
         } while (Value);
     }
 
+    string Digits = StrData(Buffer + DigitIndex, DigitCount);
+
     // NOTE(vak): Output
 
     usize BytesWritten  = 0;
     {
-        usize BytesToWrite = DigitCount + PrefixString.Size;
+        usize BytesToWrite = Digits.Size + PrefixString.Size;
 
         if (IsNegative)
             BytesToWrite++;
@@ -183,7 +208,7 @@ local usize PrintInt(print_output Out, print_int_settings Settings)
             BytesWritten += PrintCharacter(Out, ' ');
 
         BytesWritten += Print(Out, PrefixString);
-        BytesWritten += Print(Out, StrData(Buffer + DigitIndex, DigitCount));
+        BytesWritten += Print(Out, Digits);
 
         if (!LeftPad)
         {
