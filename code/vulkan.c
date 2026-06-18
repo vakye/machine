@@ -49,16 +49,43 @@ local PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion = {0};
     X(vkGetPhysicalDeviceProperties) \
     X(vkGetPhysicalDeviceQueueFamilyProperties) \
     \
+    X(vkGetPhysicalDeviceSurfaceFormatsKHR) \
+    X(vkGetPhysicalDeviceSurfacePresentModesKHR) \
+    X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \
+    \
     X(vkCreateDevice) \
+    X(vkDeviceWaitIdle) \
+    \
     X(vkGetDeviceQueue) \
+    X(vkQueueSubmit) \
+    X(vkQueuePresentKHR) \
     \
     X(vkCreateCommandPool) \
     X(vkAllocateCommandBuffers) \
+    X(vkResetCommandBuffer) \
+    X(vkBeginCommandBuffer) \
+    X(vkEndCommandBuffer) \
+    \
+    X(vkCreateImageView) \
+    \
+    X(vkCreateSwapchainKHR) \
+    X(vkGetSwapchainImagesKHR) \
+    X(vkAcquireNextImageKHR) \
+    \
+    X(vkCreateSemaphore) \
+    \
+    X(vkCmdBeginRendering) \
+    X(vkCmdEndRendering) \
+    \
+    X(vkCmdPipelineBarrier) \
     \
     X(vkDestroyInstance) \
     X(vkDestroySurfaceKHR) \
     X(vkDestroyDevice) \
-    X(vkDestroyCommandPool)
+    X(vkDestroyCommandPool) \
+    X(vkDestroyImageView) \
+    X(vkDestroySwapchainKHR) \
+    X(vkDestroySemaphore)
 
 #define DeclareVulkanFunction(Name) \
     local PFN_##Name Name = {0};
@@ -79,6 +106,22 @@ AllVulkanFunctions(DeclareVulkanFunction)
 
 typedef struct
 {
+    VkSwapchainKHR Swapchain;
+
+    VkPresentModeKHR PresentMode;
+    VkFormat Format;
+    VkColorSpaceKHR ColorSpace;
+
+    u32 ImageCount;
+    u32 SizeX;
+    u32 SizeY;
+
+    VkImage Images[8];
+    VkImageView ImageViews[8];
+} vulkan_swapchain;
+
+typedef struct
+{
     u32 VersionOfAPI;
 
     VkInstance Instance;
@@ -92,6 +135,15 @@ typedef struct
 
     VkCommandPool CommandPool;
     VkCommandBuffer CommandBuffer;
+
+    vulkan_swapchain Swapchain;
+
+    VkSemaphore AcquireSemaphore;
+    VkSemaphore SubmitSemaphore;
+
+    // NOTE(vak): Per-frame state
+
+    u32 ImageIndex;
 } vulkan_context;
 
 local vulkan_context Vulkan = {0};
@@ -99,6 +151,101 @@ local vulkan_context Vulkan = {0};
 local void VulkanDeleteRenderer(void);
 local void VulkanBeginRendering(void);
 local void VulkanEndRendering(void);
+
+local void VulkanRecreateSwapchain(void)
+{
+    vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
+
+    if (Swapchain->Swapchain)
+    {
+        for (u32 Index = 0; Index < Swapchain->ImageCount; Index++)
+            vkDestroyImageView(Vulkan.Device, Swapchain->ImageViews[Index], 0);
+    }
+
+    VkSurfaceCapabilitiesKHR SurfaceCapabilities = {0};
+
+    VulkanCheck(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+        Vulkan.PhysicalDevice,
+        Vulkan.Surface,
+        &SurfaceCapabilities
+    ));
+
+    u32 MinImageCount = Clamp(
+        SurfaceCapabilities.minImageCount,
+        3,
+        SurfaceCapabilities.maxImageCount
+    );
+
+    Swapchain->SizeX = SurfaceCapabilities.currentExtent.width;
+    Swapchain->SizeY = SurfaceCapabilities.currentExtent.height;
+
+    VkSwapchainKHR OldSwapchain = Swapchain->Swapchain;
+
+    VkSwapchainCreateInfoKHR SwapchainInfo =
+    {
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface = Vulkan.Surface,
+        .minImageCount = MinImageCount,
+        .imageFormat = Swapchain->Format,
+        .imageColorSpace = Swapchain->ColorSpace,
+        .imageExtent = SurfaceCapabilities.currentExtent,
+        .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .preTransform = SurfaceCapabilities.currentTransform,
+        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        .presentMode = Swapchain->PresentMode,
+        .clipped = true,
+        .oldSwapchain = OldSwapchain
+    };
+
+    VulkanCheck(vkCreateSwapchainKHR(Vulkan.Device, &SwapchainInfo, 0, &Swapchain->Swapchain));
+
+    if (OldSwapchain)
+        vkDestroySwapchainKHR(Vulkan.Device, OldSwapchain, 0);
+
+    Swapchain->ImageCount = ArrayCount(Swapchain->Images);
+
+    VulkanCheck(vkGetSwapchainImagesKHR(
+        Vulkan.Device,
+        Swapchain->Swapchain,
+        &Swapchain->ImageCount,
+        Swapchain->Images
+    ));
+
+    AlwaysAssert(Swapchain->ImageCount > 0);
+
+    for (usize Index = 0; Index < Swapchain->ImageCount; Index++)
+    {
+        VkImageViewCreateInfo ViewInfo =
+        {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = Swapchain->Images[Index],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = Swapchain->Format,
+            .components =
+            {
+                .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .layerCount = 1,
+                .levelCount = 1,
+            },
+        };
+
+        VulkanCheck(vkCreateImageView(
+            Vulkan.Device,
+            &ViewInfo,
+            0,
+            &Swapchain->ImageViews[Index]
+        ));
+    }
+}
 
 local void VulkanMakeRenderer(void)
 {
@@ -242,7 +389,7 @@ local void VulkanMakeRenderer(void)
 
     // NOTE(vak): Queue family
     {
-        VkQueueFamilyProperties QueueFamilyProperties[64] = {0};
+        VkQueueFamilyProperties QueueFamilyProperties[32] = {0};
         u32 QueueFamilyCount = ArrayCount(QueueFamilyProperties);
 
         vkGetPhysicalDeviceQueueFamilyProperties(
@@ -289,9 +436,16 @@ local void VulkanMakeRenderer(void)
             VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         };
 
+        VkPhysicalDeviceVulkan13Features Vulkan13Features =
+        {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+            .dynamicRendering = true,
+        };
+
         VkDeviceCreateInfo DeviceInfo =
         {
             .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            .pNext = &Vulkan13Features,
             .queueCreateInfoCount = 1,
             .pQueueCreateInfos = &QueueInfo,
             .ppEnabledExtensionNames = Extensions,
@@ -332,10 +486,107 @@ local void VulkanMakeRenderer(void)
             Vulkan.Device, &AllocateInfo, &Vulkan.CommandBuffer
         ));
     }
+
+    // NOTE(vak): Present mode
+    {
+        vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
+
+        VkPresentModeKHR PresentModes[16] = {0};
+        u32 PresentModeCount = ArrayCount(PresentModes);
+
+        VulkanCheck(vkGetPhysicalDeviceSurfacePresentModesKHR(
+            Vulkan.PhysicalDevice,
+            Vulkan.Surface,
+            &PresentModeCount,
+            PresentModes
+        ));
+
+        Swapchain->PresentMode = VK_PRESENT_MODE_FIFO_KHR;
+
+        for (u32 Index = 0; Index < PresentModeCount; Index++)
+        {
+            VkPresentModeKHR PresentMode = PresentModes[Index];
+
+            if (PresentMode == VK_PRESENT_MODE_MAILBOX_KHR)
+            {
+                Swapchain->PresentMode = PresentMode;
+                break;
+            }
+        }
+    }
+
+    // NOTE(vak): Swapchain format
+    {
+        vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
+
+        VkSurfaceFormatKHR SurfaceFormats[64] = {0};
+        u32 SurfaceFormatCount = ArrayCount(SurfaceFormats);
+
+        VulkanCheck(vkGetPhysicalDeviceSurfaceFormatsKHR(
+            Vulkan.PhysicalDevice,
+            Vulkan.Surface,
+            &SurfaceFormatCount,
+            SurfaceFormats
+        ));
+
+        Swapchain->Format = VK_FORMAT_UNDEFINED;
+        Swapchain->ColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+
+        for (u32 Index = 0; Index < SurfaceFormatCount; Index++)
+        {
+            VkSurfaceFormatKHR SurfaceFormat = SurfaceFormats[Index];
+
+            if (
+                (SurfaceFormat.format == VK_FORMAT_R8G8B8A8_UNORM) ||
+                (SurfaceFormat.format == VK_FORMAT_B8G8R8A8_UNORM)
+            )
+            {
+                Swapchain->Format = SurfaceFormat.format;
+                Swapchain->ColorSpace = SurfaceFormat.colorSpace;
+                break;
+            }
+        }
+
+        AlwaysAssert(Swapchain->Format != VK_FORMAT_UNDEFINED);
+    }
+
+    // NOTE(vak): Swapchain
+    {
+        VulkanRecreateSwapchain();
+    }
+
+    // NOTE(vak): Semaphore
+    {
+        VkSemaphoreCreateInfo SemaphoreInfo =
+        {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        };
+
+        VulkanCheck(vkCreateSemaphore(Vulkan.Device, &SemaphoreInfo, 0, &Vulkan.AcquireSemaphore));
+        VulkanCheck(vkCreateSemaphore(Vulkan.Device, &SemaphoreInfo, 0, &Vulkan.SubmitSemaphore));
+    }
 }
 
 local void VulkanDeleteRenderer(void)
 {
+    VulkanCheck(vkDeviceWaitIdle(Vulkan.Device));
+
+    if (Vulkan.SubmitSemaphore)
+        vkDestroySemaphore(Vulkan.Device, Vulkan.SubmitSemaphore, 0);
+
+    if (Vulkan.AcquireSemaphore)
+        vkDestroySemaphore(Vulkan.Device, Vulkan.AcquireSemaphore, 0);
+
+    vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
+
+    if (Swapchain->Swapchain)
+    {
+        for (u32 Index = 0; Index < Swapchain->ImageCount; Index++)
+            vkDestroyImageView(Vulkan.Device, Swapchain->ImageViews[Index], 0);
+
+        vkDestroySwapchainKHR(Vulkan.Device, Swapchain->Swapchain, 0);
+    }
+
     if (Vulkan.CommandPool)
         vkDestroyCommandPool(Vulkan.Device, Vulkan.CommandPool, 0);
 
@@ -356,10 +607,197 @@ local void VulkanDeleteRenderer(void)
 
 local void VulkanBeginRendering(void)
 {
+    vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
 
+    // NOTE(vak): Resize swapchain if necessary
+    {
+        VkSurfaceCapabilitiesKHR SurfaceCapabilities = {0};
+
+        VulkanCheck(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+            Vulkan.PhysicalDevice,
+            Vulkan.Surface,
+            &SurfaceCapabilities
+        ));
+
+        u32 SizeX = SurfaceCapabilities.currentExtent.width;
+        u32 SizeY = SurfaceCapabilities.currentExtent.height;
+
+        if ((SizeX != Swapchain->SizeX) || (SizeY != Swapchain->SizeY))
+        {
+            VulkanCheck(vkDeviceWaitIdle(Vulkan.Device));
+
+            VulkanRecreateSwapchain();
+
+            VulkanCheck(vkDeviceWaitIdle(Vulkan.Device));
+        }
+    }
+
+    // NOTE(vak): Acquire next image
+    {
+        VulkanCheck(vkAcquireNextImageKHR(
+            Vulkan.Device,
+            Swapchain->Swapchain,
+            U64Max,
+            Vulkan.AcquireSemaphore,
+            0,
+            &Vulkan.ImageIndex
+        ));
+    }
+
+    // NOTE(vak): Start recording commands
+    {
+        VkCommandBufferBeginInfo BeginInfo =
+        {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+
+        VulkanCheck(vkResetCommandBuffer(Vulkan.CommandBuffer, 0));
+        VulkanCheck(vkBeginCommandBuffer(Vulkan.CommandBuffer, &BeginInfo));
+    }
+
+    // NOTE(vak): Rendering pipeline barrier
+    {
+        VkImageMemoryBarrier RenderBarrier =
+        {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_NONE,
+            .dstAccessMask = VK_ACCESS_NONE,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = Swapchain->Images[Vulkan.ImageIndex],
+            .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .layerCount = 1,
+                .levelCount = 1,
+            },
+        };
+
+        vkCmdPipelineBarrier(
+            Vulkan.CommandBuffer,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // NOTE(vak): Last Draw
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // NOTE(vak): This Draw
+            VK_DEPENDENCY_BY_REGION_BIT,
+            0, 0,
+            0, 0,
+            1, &RenderBarrier
+        );
+    }
+
+    // NOTE(vak): Begin rendering
+    {
+        VkRenderingAttachmentInfo ColorAttachment =
+        {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = Swapchain->ImageViews[Vulkan.ImageIndex],
+            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .clearValue =
+            {
+                .color = {0.08f, 0.09f, 0.11f, 1.0f},
+            },
+        };
+
+        VkRenderingInfo RenderingInfo =
+        {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .renderArea = {{0, 0}, {Swapchain->SizeX, Swapchain->SizeY}},
+            .layerCount = 1,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &ColorAttachment,
+        };
+
+        vkCmdBeginRendering(Vulkan.CommandBuffer, &RenderingInfo);
+    }
 }
 
 local void VulkanEndRendering(void)
 {
+    vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
 
+    // NOTE(vak): End rendering
+    {
+        vkCmdEndRendering(Vulkan.CommandBuffer);
+    }
+
+    // NOTE(vak): Present pipeline barrier
+    {
+        VkImageMemoryBarrier PresentBarrier =
+        {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_NONE,
+            .dstAccessMask = VK_ACCESS_NONE,
+            .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = Swapchain->Images[Vulkan.ImageIndex],
+            .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .layerCount = 1,
+                .levelCount = 1,
+            },
+        };
+
+        vkCmdPipelineBarrier(
+            Vulkan.CommandBuffer,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // NOTE(vak): Last Draw
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // NOTE(vak): This Draw
+            VK_DEPENDENCY_BY_REGION_BIT,
+            0, 0,
+            0, 0,
+            1, &PresentBarrier
+        );
+    }
+
+    // NOTE(vak): Stop recording commands
+    {
+        VulkanCheck(vkEndCommandBuffer(Vulkan.CommandBuffer));
+    }
+
+    // NOTE(vak): Submit commands
+    {
+        // NOTE(vak): Wait for the image to be acquired when we are ready to
+        // write to the color attachment.
+        VkPipelineStageFlags WaitDestinationStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+        VkSubmitInfo SubmitInfo =
+        {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &Vulkan.AcquireSemaphore,
+            .pWaitDstStageMask = &WaitDestinationStages,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &Vulkan.CommandBuffer,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &Vulkan.SubmitSemaphore,
+        };
+
+        VulkanCheck(vkQueueSubmit(Vulkan.Queue, 1, &SubmitInfo, 0));
+    }
+
+    // NOTE(vak): Present
+    {
+        VkPresentInfoKHR PresentInfo =
+        {
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &Vulkan.SubmitSemaphore,
+            .swapchainCount = 1,
+            .pSwapchains = &Swapchain->Swapchain,
+            .pImageIndices = &Vulkan.ImageIndex,
+        };
+
+        VulkanCheck(vkQueuePresentKHR(Vulkan.Queue, &PresentInfo));
+    }
+
+    // NOTE(vak): Wait for everything to finish
+    {
+        VulkanCheck(vkDeviceWaitIdle(Vulkan.Device));
+    }
 }

@@ -212,7 +212,7 @@ CTAssert(sizeof(f64) == 8);
     ((usize)(&(((Structure*)0)->Member)))
 
 #define Minimum(A, B) ((A) < (B) ? (A) : (B))
-#define Maximum(A, B) ((A) < (B) ? (A) : (B))
+#define Maximum(A, B) ((A) > (B) ? (A) : (B))
 
 #define Clamp(Min, Value, Max) \
     Maximum(Min, Minimum(Max, Value))

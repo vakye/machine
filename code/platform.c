@@ -14,12 +14,20 @@ local void DeleteWindow(void);
 local b32 IsWindowClosed(void);
 local void SetWindowVisible(b32 Visible);
 
+local u32 GetRefreshRate(void);
+
 local void* LoadVulkan(void); // NOTE(vak): Returns vkGetInstanceProcAddr()
 local void UnloadVulkan(void);
 
 // NOTE(vak): Input
 
 local void PollEvents(void);
+
+// NOTE(vak): Timing
+
+local usize GetWallClock(void);
+local f32 GetSecondsElapsed(usize From, usize To);
+local void Wait(f32 Seconds);
 
 // NOTE(vak): Console
 

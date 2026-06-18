@@ -11,12 +11,21 @@ void EntryPoint(void)
 
     SetWindowVisible(true);
 
+    u32 RefreshRate = GetRefreshRate();
+    f32 TargetSeconds = 1.0f / RefreshRate;
+    usize FrameBegin = GetWallClock();
+
     while (!IsWindowClosed())
     {
         PollEvents();
 
         BeginRendering();
         EndRendering();
+
+        f32 SecondsElapsed = GetSecondsElapsed(FrameBegin, GetWallClock());
+        Wait(TargetSeconds - SecondsElapsed);
+
+        FrameBegin = GetWallClock();
     }
 
     DeleteRenderer();

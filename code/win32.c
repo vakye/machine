@@ -160,6 +160,22 @@ local void SetWindowVisible(b32 Visible)
         ShowWindow(Win32.Window, SW_HIDE);
 }
 
+local u32 GetRefreshRate(void)
+{
+    u32 Result = 0;
+
+    DEVMODEA DisplayMode = {0};
+    if (EnumDisplaySettingsA(0, ENUM_CURRENT_SETTINGS, &DisplayMode))
+    {
+        Result = DisplayMode.dmDisplayFrequency;
+    }
+
+    if (!Result)
+        Result = 60;
+
+    return (Result);
+}
+
 local void* LoadVulkan(void)
 {
     void* Result = {0};
@@ -190,6 +206,56 @@ local void PollEvents(void)
         TranslateMessage(&Message);
         DispatchMessageW(&Message);
     }
+}
+
+// NOTE(vak): Timing
+
+local usize GetWallClock(void)
+{
+    LARGE_INTEGER Counter = {0};
+    QueryPerformanceCounter(&Counter);
+
+    usize Result = Counter.QuadPart;
+    return (Result);
+}
+
+local f32 GetSecondsElapsed(usize From, usize To)
+{
+    LARGE_INTEGER Frequency = {0};
+    QueryPerformanceFrequency(&Frequency);
+
+    usize CounterElapsed = To - From;
+    f32 SecondsElapsed = (f32)CounterElapsed / (f32)Frequency.QuadPart;
+
+    return (SecondsElapsed);
+}
+
+local void Wait(f32 Seconds)
+{
+    if (Seconds <= 0.0)
+        return;
+
+    LARGE_INTEGER Frequency = {0};
+    QueryPerformanceFrequency(&Frequency);
+
+    usize CountsToWait = (ssize)(Frequency.QuadPart * Seconds);
+
+    timeBeginPeriod(1);
+    {
+        usize WaitBegin = GetWallClock();
+
+        f32 MillisecondBias = 0.5f;
+        DWORD Milliseconds = (DWORD)Maximum(0, Seconds * 1000.0f - MillisecondBias);
+
+        if (Milliseconds)
+            Sleep(Milliseconds);
+
+        usize Elapsed = GetWallClock() - WaitBegin;
+
+        while (Elapsed < CountsToWait)
+            Elapsed = GetWallClock() - WaitBegin;
+    }
+    timeEndPeriod(1);
 }
 
 // NOTE(vak): Console
