@@ -74,6 +74,10 @@ local PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion = {0};
     \
     X(vkCreateSemaphore) \
     \
+    X(vkCreateFence) \
+    X(vkWaitForFences) \
+    X(vkResetFences) \
+    \
     X(vkCmdBeginRendering) \
     X(vkCmdEndRendering) \
     \
@@ -85,7 +89,8 @@ local PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion = {0};
     X(vkDestroyCommandPool) \
     X(vkDestroyImageView) \
     X(vkDestroySwapchainKHR) \
-    X(vkDestroySemaphore)
+    X(vkDestroySemaphore) \
+    X(vkDestroyFence)
 
 #define DeclareVulkanFunction(Name) \
     local PFN_##Name Name = {0};
@@ -104,6 +109,9 @@ AllVulkanFunctions(DeclareVulkanFunction)
 // NOTE(vak): Implementation
 // ----------------------------------------------------------
 
+// NOTE(vak): Maximum number of frames in flight.
+#define VulkanMaxFlight (8)
+
 typedef struct
 {
     VkSwapchainKHR Swapchain;
@@ -116,8 +124,8 @@ typedef struct
     u32 SizeX;
     u32 SizeY;
 
-    VkImage Images[8];
-    VkImageView ImageViews[8];
+    VkImage Images[VulkanMaxFlight];
+    VkImageView ImageViews[VulkanMaxFlight];
 } vulkan_swapchain;
 
 typedef struct
@@ -134,23 +142,22 @@ typedef struct
     VkQueue Queue;
 
     VkCommandPool CommandPool;
-    VkCommandBuffer CommandBuffer;
-
     vulkan_swapchain Swapchain;
 
-    VkSemaphore AcquireSemaphore;
-    VkSemaphore SubmitSemaphore;
+    // NOTE(vak): Frame resources
 
-    // NOTE(vak): Per-frame state
+    VkCommandBuffer CommandBuffers[VulkanMaxFlight];
+    VkSemaphore AcquireSemaphores[VulkanMaxFlight];
+    VkSemaphore SubmitSemaphores[VulkanMaxFlight];
+    VkFence DrawFinishedFences[VulkanMaxFlight];
+
+    // NOTE(vak): Rendering loop state
 
     u32 ImageIndex;
+    u32 FlightIndex;
 } vulkan_context;
 
 local vulkan_context Vulkan = {0};
-
-local void VulkanDeleteRenderer(void);
-local void VulkanBeginRendering(void);
-local void VulkanEndRendering(void);
 
 local void VulkanRecreateSwapchain(void)
 {
@@ -170,10 +177,10 @@ local void VulkanRecreateSwapchain(void)
         &SurfaceCapabilities
     ));
 
-    u32 MinImageCount = Clamp(
-        SurfaceCapabilities.minImageCount,
-        3,
-        SurfaceCapabilities.maxImageCount
+    AlwaysAssert(VulkanMaxFlight >= SurfaceCapabilities.minImageCount);
+
+    u32 MinImageCount = Minimum(
+        VulkanMaxFlight, SurfaceCapabilities.maxImageCount
     );
 
     Swapchain->SizeX = SurfaceCapabilities.currentExtent.width;
@@ -246,6 +253,10 @@ local void VulkanRecreateSwapchain(void)
         ));
     }
 }
+
+local void VulkanDeleteRenderer(void);
+local void VulkanBeginRendering(void);
+local void VulkanEndRendering(void);
 
 local void VulkanMakeRenderer(void)
 {
@@ -472,21 +483,6 @@ local void VulkanMakeRenderer(void)
         VulkanCheck(vkCreateCommandPool(Vulkan.Device, &PoolInfo, 0, &Vulkan.CommandPool));
     }
 
-    // NOTE(vak): Command buffer
-    {
-        VkCommandBufferAllocateInfo AllocateInfo =
-        {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandPool = Vulkan.CommandPool,
-            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
-        };
-
-        VulkanCheck(vkAllocateCommandBuffers(
-            Vulkan.Device, &AllocateInfo, &Vulkan.CommandBuffer
-        ));
-    }
-
     // NOTE(vak): Present mode
     {
         vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
@@ -555,15 +551,37 @@ local void VulkanMakeRenderer(void)
         VulkanRecreateSwapchain();
     }
 
-    // NOTE(vak): Semaphore
+    // NOTE(vak): Frame resources
     {
+        VkCommandBufferAllocateInfo AllocateInfo =
+        {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = Vulkan.CommandPool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = VulkanMaxFlight,
+        };
+
+        VulkanCheck(vkAllocateCommandBuffers(
+            Vulkan.Device, &AllocateInfo, Vulkan.CommandBuffers
+        ));
+
         VkSemaphoreCreateInfo SemaphoreInfo =
         {
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
         };
 
-        VulkanCheck(vkCreateSemaphore(Vulkan.Device, &SemaphoreInfo, 0, &Vulkan.AcquireSemaphore));
-        VulkanCheck(vkCreateSemaphore(Vulkan.Device, &SemaphoreInfo, 0, &Vulkan.SubmitSemaphore));
+        VkFenceCreateInfo FenceInfo =
+        {
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+        };
+
+        for (usize Index = 0; Index < VulkanMaxFlight; Index++)
+        {
+            VulkanCheck(vkCreateSemaphore(Vulkan.Device, &SemaphoreInfo, 0, &Vulkan.AcquireSemaphores[Index]));
+            VulkanCheck(vkCreateSemaphore(Vulkan.Device, &SemaphoreInfo, 0, &Vulkan.SubmitSemaphores[Index]));
+            VulkanCheck(vkCreateFence(Vulkan.Device, &FenceInfo, 0, &Vulkan.DrawFinishedFences[Index]));
+        }
     }
 }
 
@@ -571,11 +589,17 @@ local void VulkanDeleteRenderer(void)
 {
     VulkanCheck(vkDeviceWaitIdle(Vulkan.Device));
 
-    if (Vulkan.SubmitSemaphore)
-        vkDestroySemaphore(Vulkan.Device, Vulkan.SubmitSemaphore, 0);
+    for (usize Index = 0; Index < VulkanMaxFlight; Index++)
+    {
+        if (Vulkan.DrawFinishedFences[Index])
+            vkDestroyFence(Vulkan.Device, Vulkan.DrawFinishedFences[Index], 0);
 
-    if (Vulkan.AcquireSemaphore)
-        vkDestroySemaphore(Vulkan.Device, Vulkan.AcquireSemaphore, 0);
+        if (Vulkan.AcquireSemaphores[Index])
+            vkDestroySemaphore(Vulkan.Device, Vulkan.AcquireSemaphores[Index], 0);
+
+        if (Vulkan.SubmitSemaphores[Index])
+            vkDestroySemaphore(Vulkan.Device, Vulkan.SubmitSemaphores[Index], 0);
+    }
 
     vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
 
@@ -632,13 +656,26 @@ local void VulkanBeginRendering(void)
         }
     }
 
+    // NOTE(vak): Frame resources
+
+    VkCommandBuffer CommandBuffer = Vulkan.CommandBuffers[Vulkan.FlightIndex];
+    VkSemaphore AcquireSemaphore = Vulkan.AcquireSemaphores[Vulkan.FlightIndex];
+    VkSemaphore SubmitSemaphores = Vulkan.SubmitSemaphores[Vulkan.FlightIndex];
+    VkFence DrawFinishedFence = Vulkan.DrawFinishedFences[Vulkan.FlightIndex];
+
+    // NOTE(vak): Wait for last draw utilizing this frame's resources
+    {
+        VulkanCheck(vkWaitForFences(Vulkan.Device, 1, &DrawFinishedFence, VK_TRUE, U64Max));
+        VulkanCheck(vkResetFences(Vulkan.Device, 1, &DrawFinishedFence));
+    }
+
     // NOTE(vak): Acquire next image
     {
         VulkanCheck(vkAcquireNextImageKHR(
             Vulkan.Device,
             Swapchain->Swapchain,
             U64Max,
-            Vulkan.AcquireSemaphore,
+            AcquireSemaphore,
             0,
             &Vulkan.ImageIndex
         ));
@@ -652,8 +689,8 @@ local void VulkanBeginRendering(void)
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
         };
 
-        VulkanCheck(vkResetCommandBuffer(Vulkan.CommandBuffer, 0));
-        VulkanCheck(vkBeginCommandBuffer(Vulkan.CommandBuffer, &BeginInfo));
+        VulkanCheck(vkResetCommandBuffer(CommandBuffer, 0));
+        VulkanCheck(vkBeginCommandBuffer(CommandBuffer, &BeginInfo));
     }
 
     // NOTE(vak): Rendering pipeline barrier
@@ -661,8 +698,8 @@ local void VulkanBeginRendering(void)
         VkImageMemoryBarrier RenderBarrier =
         {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_NONE,
-            .dstAccessMask = VK_ACCESS_NONE,
+            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,  // NOTE(vak): Complete all reads
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
             .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
             .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -677,7 +714,7 @@ local void VulkanBeginRendering(void)
         };
 
         vkCmdPipelineBarrier(
-            Vulkan.CommandBuffer,
+            CommandBuffer,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // NOTE(vak): Last Draw
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // NOTE(vak): This Draw
             VK_DEPENDENCY_BY_REGION_BIT,
@@ -711,7 +748,7 @@ local void VulkanBeginRendering(void)
             .pColorAttachments = &ColorAttachment,
         };
 
-        vkCmdBeginRendering(Vulkan.CommandBuffer, &RenderingInfo);
+        vkCmdBeginRendering(CommandBuffer, &RenderingInfo);
     }
 }
 
@@ -719,9 +756,16 @@ local void VulkanEndRendering(void)
 {
     vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
 
+    // NOTE(vak): Frame resources
+
+    VkCommandBuffer CommandBuffer = Vulkan.CommandBuffers[Vulkan.FlightIndex];
+    VkSemaphore AcquireSemaphore = Vulkan.AcquireSemaphores[Vulkan.FlightIndex];
+    VkSemaphore SubmitSemaphore = Vulkan.SubmitSemaphores[Vulkan.FlightIndex];
+    VkFence DrawFinishedFence = Vulkan.DrawFinishedFences[Vulkan.FlightIndex];
+
     // NOTE(vak): End rendering
     {
-        vkCmdEndRendering(Vulkan.CommandBuffer);
+        vkCmdEndRendering(CommandBuffer);
     }
 
     // NOTE(vak): Present pipeline barrier
@@ -729,8 +773,8 @@ local void VulkanEndRendering(void)
         VkImageMemoryBarrier PresentBarrier =
         {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_NONE,
-            .dstAccessMask = VK_ACCESS_NONE,
+            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, // NOTE(vak): Complete all writes
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
             .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -745,9 +789,9 @@ local void VulkanEndRendering(void)
         };
 
         vkCmdPipelineBarrier(
-            Vulkan.CommandBuffer,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // NOTE(vak): Last Draw
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // NOTE(vak): This Draw
+            CommandBuffer,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_DEPENDENCY_BY_REGION_BIT,
             0, 0,
             0, 0,
@@ -757,7 +801,7 @@ local void VulkanEndRendering(void)
 
     // NOTE(vak): Stop recording commands
     {
-        VulkanCheck(vkEndCommandBuffer(Vulkan.CommandBuffer));
+        VulkanCheck(vkEndCommandBuffer(CommandBuffer));
     }
 
     // NOTE(vak): Submit commands
@@ -770,15 +814,15 @@ local void VulkanEndRendering(void)
         {
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &Vulkan.AcquireSemaphore,
+            .pWaitSemaphores = &AcquireSemaphore,
             .pWaitDstStageMask = &WaitDestinationStages,
             .commandBufferCount = 1,
-            .pCommandBuffers = &Vulkan.CommandBuffer,
+            .pCommandBuffers = &CommandBuffer,
             .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &Vulkan.SubmitSemaphore,
+            .pSignalSemaphores = &SubmitSemaphore,
         };
 
-        VulkanCheck(vkQueueSubmit(Vulkan.Queue, 1, &SubmitInfo, 0));
+        VulkanCheck(vkQueueSubmit(Vulkan.Queue, 1, &SubmitInfo, DrawFinishedFence));
     }
 
     // NOTE(vak): Present
@@ -787,7 +831,7 @@ local void VulkanEndRendering(void)
         {
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &Vulkan.SubmitSemaphore,
+            .pWaitSemaphores = &SubmitSemaphore,
             .swapchainCount = 1,
             .pSwapchains = &Swapchain->Swapchain,
             .pImageIndices = &Vulkan.ImageIndex,
@@ -796,8 +840,9 @@ local void VulkanEndRendering(void)
         VulkanCheck(vkQueuePresentKHR(Vulkan.Queue, &PresentInfo));
     }
 
-    // NOTE(vak): Wait for everything to finish
+    // NOTE(vak): Advance to next frame in flight
     {
-        VulkanCheck(vkDeviceWaitIdle(Vulkan.Device));
+        Vulkan.FlightIndex += 1;
+        Vulkan.FlightIndex %= Swapchain->ImageCount;
     }
 }
