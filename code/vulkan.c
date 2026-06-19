@@ -72,6 +72,12 @@ local PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion = {0};
     X(vkGetSwapchainImagesKHR) \
     X(vkAcquireNextImageKHR) \
     \
+    X(vkCreateShaderModule) \
+    \
+    X(vkCreatePipelineLayout) \
+    \
+    X(vkCreateGraphicsPipelines) \
+    \
     X(vkCreateSemaphore) \
     \
     X(vkCreateFence) \
@@ -79,6 +85,10 @@ local PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion = {0};
     X(vkResetFences) \
     \
     X(vkCmdBeginRendering) \
+    X(vkCmdBindPipeline) \
+    X(vkCmdSetViewport) \
+    X(vkCmdSetScissor) \
+    X(vkCmdDraw) \
     X(vkCmdEndRendering) \
     \
     X(vkCmdPipelineBarrier) \
@@ -89,6 +99,9 @@ local PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion = {0};
     X(vkDestroyCommandPool) \
     X(vkDestroyImageView) \
     X(vkDestroySwapchainKHR) \
+    X(vkDestroyShaderModule) \
+    X(vkDestroyPipelineLayout) \
+    X(vkDestroyPipeline) \
     X(vkDestroySemaphore) \
     X(vkDestroyFence)
 
@@ -144,7 +157,12 @@ typedef struct
     VkCommandPool CommandPool;
     vulkan_swapchain Swapchain;
 
-    // NOTE(vak): Frame resources
+    VkShaderModule VertexShader;
+    VkShaderModule FragmentShader;
+    VkPipelineLayout PipelineLayout;
+    VkPipeline Pipeline;
+
+    // NOTE(vak): Frame-in-flight resources
 
     VkCommandBuffer CommandBuffers[VulkanMaxFlight];
     VkSemaphore AcquireSemaphores[VulkanMaxFlight];
@@ -155,9 +173,9 @@ typedef struct
 
     u32 ImageIndex;
     u32 FlightIndex;
-} vulkan_context;
+} vulkan_state;
 
-local vulkan_context Vulkan = {0};
+local vulkan_state Vulkan = {0};
 
 local void VulkanRecreateSwapchain(void)
 {
@@ -551,6 +569,175 @@ local void VulkanMakeRenderer(void)
         VulkanRecreateSwapchain();
     }
 
+    // NOTE(vak): Vertex shader
+    {
+        u32 VertexCode[] =
+        {
+            #include "shaders/basic.vert.h"
+        };
+
+        VkShaderModuleCreateInfo ShaderInfo =
+        {
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .codeSize = sizeof(VertexCode),
+            .pCode = VertexCode,
+        };
+
+        VulkanCheck(vkCreateShaderModule(Vulkan.Device, &ShaderInfo, 0, &Vulkan.VertexShader));
+    }
+
+    // NOTE(vak): Fragment shader
+    {
+        u32 FragmentCode[] =
+        {
+            #include "shaders/basic.frag.h"
+        };
+
+        VkShaderModuleCreateInfo ShaderInfo =
+        {
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .codeSize = sizeof(FragmentCode),
+            .pCode = FragmentCode,
+        };
+
+        VulkanCheck(vkCreateShaderModule(Vulkan.Device, &ShaderInfo, 0, &Vulkan.FragmentShader));
+    }
+
+    // NOTE(vak): Pipeline layout
+    {
+        VkPipelineLayoutCreateInfo LayoutInfo =
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        };
+
+        VulkanCheck(vkCreatePipelineLayout(Vulkan.Device, &LayoutInfo, 0, &Vulkan.PipelineLayout));
+    }
+
+    // NOTE(vak): Pipeline
+    {
+        VkPipelineShaderStageCreateInfo Stages[] =
+        {
+            {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_VERTEX_BIT,
+                .module = Vulkan.VertexShader,
+                .pName = "main",
+            },
+            {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+                .module = Vulkan.FragmentShader,
+                .pName = "main",
+            },
+        };
+
+        VkPipelineVertexInputStateCreateInfo VertexInputState =
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        };
+
+        VkPipelineInputAssemblyStateCreateInfo InputAssemblyState =
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        };
+
+        VkPipelineTessellationStateCreateInfo TessellationState =
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+        };
+
+        VkPipelineViewportStateCreateInfo ViewportState =
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .viewportCount = 1,
+            .pViewports = &(VkViewport){0},
+            .scissorCount = 1,
+            .pScissors = &(VkRect2D){0},
+        };
+
+        VkPipelineRasterizationStateCreateInfo RasterizationState =
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .polygonMode = VK_POLYGON_MODE_FILL,
+            .cullMode = VK_CULL_MODE_BACK_BIT,
+            .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+            .lineWidth = 1.0f,
+        };
+
+        VkPipelineMultisampleStateCreateInfo MultisampleState =
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        };
+
+        VkPipelineDepthStencilStateCreateInfo DepthStencilState =
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        };
+
+        VkPipelineColorBlendStateCreateInfo ColorBlendState =
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .attachmentCount = 1,
+            .pAttachments = &(VkPipelineColorBlendAttachmentState)
+            {
+                .blendEnable = VK_TRUE,
+                .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+                .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                .colorBlendOp = VK_TRUE,
+                .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+                .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+                .alphaBlendOp = VK_TRUE,
+                .colorWriteMask =
+                    VK_COLOR_COMPONENT_R_BIT|
+                    VK_COLOR_COMPONENT_G_BIT|
+                    VK_COLOR_COMPONENT_B_BIT|
+                    VK_COLOR_COMPONENT_A_BIT,
+            },
+        };
+
+        VkDynamicState DynamicStates[] =
+        {
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR,
+        };
+
+        VkPipelineDynamicStateCreateInfo DynamicState =
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .dynamicStateCount = ArrayCount(DynamicStates),
+            .pDynamicStates = DynamicStates,
+        };
+
+        VkPipelineRenderingCreateInfo RenderingInfo =
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+            .colorAttachmentCount = 1,
+            .pColorAttachmentFormats = &Vulkan.Swapchain.Format,
+        };
+
+        VkGraphicsPipelineCreateInfo PipelineInfo =
+        {
+            .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .pNext = &RenderingInfo,
+            .stageCount = ArrayCount(Stages),
+            .pStages = Stages,
+            .pVertexInputState = &VertexInputState,
+            .pInputAssemblyState = &InputAssemblyState,
+            .pTessellationState = &TessellationState,
+            .pViewportState = &ViewportState,
+            .pRasterizationState = &RasterizationState,
+            .pMultisampleState = &MultisampleState,
+            .pDepthStencilState = &DepthStencilState,
+            .pColorBlendState = &ColorBlendState,
+            .pDynamicState = &DynamicState,
+            .layout = Vulkan.PipelineLayout,
+        };
+
+        VulkanCheck(vkCreateGraphicsPipelines(Vulkan.Device, 0, 1, &PipelineInfo, 0, &Vulkan.Pipeline));
+    }
+
     // NOTE(vak): Frame resources
     {
         VkCommandBufferAllocateInfo AllocateInfo =
@@ -600,6 +787,18 @@ local void VulkanDeleteRenderer(void)
         if (Vulkan.SubmitSemaphores[Index])
             vkDestroySemaphore(Vulkan.Device, Vulkan.SubmitSemaphores[Index], 0);
     }
+
+    if (Vulkan.Pipeline)
+        vkDestroyPipeline(Vulkan.Device, Vulkan.Pipeline, 0);
+
+    if (Vulkan.PipelineLayout)
+        vkDestroyPipelineLayout(Vulkan.Device, Vulkan.PipelineLayout, 0);
+
+    if (Vulkan.FragmentShader)
+        vkDestroyShaderModule(Vulkan.Device, Vulkan.FragmentShader, 0);
+
+    if (Vulkan.VertexShader)
+        vkDestroyShaderModule(Vulkan.Device, Vulkan.VertexShader, 0);
 
     vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
 
@@ -656,14 +855,14 @@ local void VulkanBeginRendering(void)
         }
     }
 
-    // NOTE(vak): Frame resources
+    // NOTE(vak): Flight resources
 
     VkCommandBuffer CommandBuffer = Vulkan.CommandBuffers[Vulkan.FlightIndex];
     VkSemaphore AcquireSemaphore = Vulkan.AcquireSemaphores[Vulkan.FlightIndex];
     VkSemaphore SubmitSemaphores = Vulkan.SubmitSemaphores[Vulkan.FlightIndex];
     VkFence DrawFinishedFence = Vulkan.DrawFinishedFences[Vulkan.FlightIndex];
 
-    // NOTE(vak): Wait for last draw utilizing this frame's resources
+    // NOTE(vak): Wait for last draw utilizing this flight's resources
     {
         VulkanCheck(vkWaitForFences(Vulkan.Device, 1, &DrawFinishedFence, VK_TRUE, U64Max));
         VulkanCheck(vkResetFences(Vulkan.Device, 1, &DrawFinishedFence));
@@ -750,6 +949,32 @@ local void VulkanBeginRendering(void)
 
         vkCmdBeginRendering(CommandBuffer, &RenderingInfo);
     }
+
+    // NOTE(vak): Triangle
+    {
+        vkCmdBindPipeline(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Vulkan.Pipeline);
+
+        VkViewport Viewport =
+        {
+            .x = 0.0f,
+            .y = (f32)Swapchain->SizeY,
+            .width = (f32)Swapchain->SizeX,
+            .height = -(f32)Swapchain->SizeY,
+            .minDepth = 0.0f,
+            .maxDepth = 1.0f,
+        };
+
+        VkRect2D Scissor =
+        {
+            {0, 0},
+            {Swapchain->SizeX, Swapchain->SizeY},
+        };
+
+        vkCmdSetViewport(CommandBuffer, 0, 1, &Viewport);
+        vkCmdSetScissor(CommandBuffer, 0, 1, &Scissor);
+
+        vkCmdDraw(CommandBuffer, 3, 1, 0, 0);
+    }
 }
 
 local void VulkanEndRendering(void)
@@ -790,8 +1015,8 @@ local void VulkanEndRendering(void)
 
         vkCmdPipelineBarrier(
             CommandBuffer,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // NOTE(vak): This Draw
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // NOTE(vak): This Draw
             VK_DEPENDENCY_BY_REGION_BIT,
             0, 0,
             0, 0,
@@ -806,8 +1031,8 @@ local void VulkanEndRendering(void)
 
     // NOTE(vak): Submit commands
     {
-        // NOTE(vak): Wait for the image to be acquired when we are ready to
-        // write to the color attachment.
+        // NOTE(vak): Start waiting for the image to be acquired when we're
+        // ready to output to the color attachment.
         VkPipelineStageFlags WaitDestinationStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 
         VkSubmitInfo SubmitInfo =
