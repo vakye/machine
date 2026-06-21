@@ -1,27 +1,33 @@
 
 #version 450
 
-vec2 Positions[] =
+struct vertex
 {
-    vec2(-0.5, -0.5),
-    vec2( 0.5, -0.5),
-    vec2( 0.0,  0.5),
+    float X, Y;
+    float U, V;
+    float R, G, B, A;
 };
 
-vec4 Colors[] =
+layout(binding = 0) readonly buffer VertexBuffer
 {
-    vec4(1.0, 0.0, 0.0, 1.0),
-    vec4(0.0, 1.0, 0.0, 1.0),
-    vec4(0.0, 0.0, 1.0, 1.0),
+    vertex Vertices[];
 };
 
 layout(location = 0) out VertexShaderOutput
 {
+    vec2 TexCoord;
     vec4 Color;
 } Out;
 
 void main()
 {
-    gl_Position = vec4(Positions[gl_VertexIndex], 0.0, 1.0);
-    Out.Color = Colors[gl_VertexIndex];
+    vertex Vertex = Vertices[gl_VertexIndex];
+
+    vec2 Position = vec2(Vertex.X, Vertex.Y);
+    vec2 TexCoord = vec2(Vertex.U, Vertex.V);
+    vec4 Color    = vec4(Vertex.R, Vertex.G, Vertex.B, Vertex.A);
+
+    gl_Position  = vec4(Position, 0.0, 1.0);
+    Out.TexCoord = TexCoord;
+    Out.Color    = Color;
 }

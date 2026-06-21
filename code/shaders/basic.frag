@@ -3,6 +3,7 @@
 
 layout(location = 0) in VertexShaderOutput
 {
+    vec2 TexCoord;
     vec4 Color;
 } In;
 
