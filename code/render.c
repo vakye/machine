@@ -15,24 +15,28 @@ typedef enum
 
 local void MakeRenderer(renderer_api API);
 
+typedef struct
+{
+    f32 MinX, MinY;
+    f32 MaxX, MaxY;
+    f32 R, G, B, A;
+} draw_rect;
+
 typedef void delete_renderer(void);
-typedef void begin_rendering(void);
-typedef void end_rendering(void);
+typedef void render(draw_rect* Rects, usize RectCount);
 
 typedef struct
 {
     renderer_api     CurrentAPI;
 
     delete_renderer* DeleteRenderer;
-    begin_rendering* BeginRendering;
-    end_rendering*   EndRendering;
+    render*          Render;
 } renderer_functions;
 
 local renderer_functions RendererFunctions = {0};
 
 #define DeleteRenderer(...) RendererFunctions.DeleteRenderer(__VA_ARGS__)
-#define BeginRendering(...) RendererFunctions.BeginRendering(__VA_ARGS__)
-#define EndRendering(...)   RendererFunctions.EndRendering(__VA_ARGS__)
+#define Render(...)         RendererFunctions.Render(__VA_ARGS__)
 
 // ----------------------------------------------------------
 // NOTE(vak): Implementation

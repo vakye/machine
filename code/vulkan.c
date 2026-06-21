@@ -176,6 +176,13 @@ typedef struct
 
 typedef struct
 {
+    f32 X, Y;
+    f32 U, V;
+    f32 R, G, B, A;
+} vulkan_vertex;
+
+typedef struct
+{
     u32 VersionOfAPI;
 
     VkInstance Instance;
@@ -191,7 +198,6 @@ typedef struct
     vulkan_swapchain Swapchain;
     vulkan_pipeline Pipeline;
 
-    vulkan_buffer TransferBuffer;
     vulkan_buffer VertexBuffer;
 
     // NOTE(vak): Frame-in-flight resources
@@ -593,20 +599,24 @@ local vulkan_buffer VulkanCreateBuffer(
     return (Buffer);
 }
 
-local void VulkanUploadBuffer(vulkan_buffer* Buffer, void* Data, usize Offset, usize Size)
+local void VulkanUploadBuffer(
+    vulkan_buffer* DestBuffer,
+    vulkan_buffer* TransferBuffer,
+    void* Data, usize Offset, usize Size)
 {
     VkCommandBuffer CommandBuffer = Vulkan.CommandBuffers[0];
 
     // NOTE(vak): Checks
     {
         AlwaysAssert(Data);
-        AlwaysAssert(Size <= Vulkan.TransferBuffer.Size);
-        AlwaysAssert(Offset + Size <= Buffer->Size);
+        AlwaysAssert(TransferBuffer->Mapping);
+        AlwaysAssert(Size <= TransferBuffer->Size);
+        AlwaysAssert(Offset + Size <= DestBuffer->Size);
     }
 
     // NOTE(vak): Copy into transfer buffer
     {
-        CopyMemory(Vulkan.TransferBuffer.Mapping, Data, Size);
+        CopyMemory(TransferBuffer->Mapping, Data, Size);
     }
 
     // NOTE(vak): Start recording commands
@@ -632,8 +642,8 @@ local void VulkanUploadBuffer(vulkan_buffer* Buffer, void* Data, usize Offset, u
 
         vkCmdCopyBuffer(
             CommandBuffer,
-            Vulkan.TransferBuffer.Buffer,
-            Buffer->Buffer,
+            TransferBuffer->Buffer,
+            DestBuffer->Buffer,
             1,
             &Region
         );
@@ -674,8 +684,7 @@ local void VulkanDeleteBuffer(vulkan_buffer* Buffer)
 }
 
 local void VulkanDeleteRenderer(void);
-local void VulkanBeginRendering(void);
-local void VulkanEndRendering(void);
+local void VulkanRender(draw_rect* Rects, usize RectCount);
 
 local void VulkanMakeRenderer(void)
 {
@@ -683,8 +692,7 @@ local void VulkanMakeRenderer(void)
     {
         RendererFunctions.CurrentAPI     = RendererAPI_Vulkan;
         RendererFunctions.DeleteRenderer = &VulkanDeleteRenderer;
-        RendererFunctions.BeginRendering = &VulkanBeginRendering;
-        RendererFunctions.EndRendering   = &VulkanEndRendering;
+        RendererFunctions.Render         = &VulkanRender;
     }
 
     // NOTE(vak): Setup Vulkan and load non-instance functions
@@ -1012,31 +1020,14 @@ local void VulkanMakeRenderer(void)
 
     // NOTE(vak): Buffers
     {
-        Vulkan.TransferBuffer = VulkanCreateBuffer(
-            MB(16),
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        Vulkan.VertexBuffer = VulkanCreateBuffer(
+            MB(128),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT|
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             true
         );
-
-        Vulkan.VertexBuffer = VulkanCreateBuffer(
-            MB(16),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            false
-        );
-
-        f32 VertexData[] =
-        {
-            -0.5f, -0.5f,    0.0f, 0.0f,    1.0f, 0.0f, 0.0f, 1.0f,
-             0.5f, -0.5f,    1.0f, 0.0f,    0.0f, 1.0f, 0.0f, 1.0f,
-             0.0f,  0.5f,    0.5f, 1.0f,    0.0f, 0.0f, 1.0f, 1.0f,
-        };
-
-        VulkanUploadBuffer(&Vulkan.VertexBuffer, VertexData, 0, sizeof(VertexData));
     }
 
     // NOTE(vak): Synchronization
@@ -1078,7 +1069,6 @@ local void VulkanDeleteRenderer(void)
     }
 
     VulkanDeleteBuffer(&Vulkan.VertexBuffer);
-    VulkanDeleteBuffer(&Vulkan.TransferBuffer);
 
     VulkanDeletePipeline(&Vulkan.Pipeline);
 
@@ -1110,7 +1100,7 @@ local void VulkanDeleteRenderer(void)
     UnloadVulkan();
 }
 
-local void VulkanBeginRendering(void)
+local void VulkanRender(draw_rect* Rects, usize RectCount)
 {
     vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
 
@@ -1141,7 +1131,7 @@ local void VulkanBeginRendering(void)
 
     VkCommandBuffer CommandBuffer = Vulkan.CommandBuffers[Vulkan.FlightIndex];
     VkSemaphore AcquireSemaphore = Vulkan.AcquireSemaphores[Vulkan.FlightIndex];
-    VkSemaphore SubmitSemaphores = Vulkan.SubmitSemaphores[Vulkan.FlightIndex];
+    VkSemaphore SubmitSemaphore = Vulkan.SubmitSemaphores[Vulkan.FlightIndex];
     VkFence DrawFinishedFence = Vulkan.DrawFinishedFences[Vulkan.FlightIndex];
 
     // NOTE(vak): Wait for last draw utilizing this flight's resources
@@ -1232,7 +1222,34 @@ local void VulkanBeginRendering(void)
         vkCmdBeginRendering(CommandBuffer, &RenderingInfo);
     }
 
-    // NOTE(vak): Triangle
+    // NOTE(vak): Write draw data
+    u32 VertexCount = 0;
+
+    {
+        usize MaxVertexCount = Vulkan.VertexBuffer.Size / sizeof(vulkan_vertex);
+        usize MaxRectCount   = MaxVertexCount / 6;
+
+        AlwaysAssert(RectCount <= MaxRectCount);
+
+        vulkan_vertex* Base = (vulkan_vertex*)Vulkan.VertexBuffer.Mapping;
+
+        for (usize RectIndex = 0; RectIndex < RectCount; RectIndex++)
+        {
+            draw_rect* Rect = Rects + RectIndex;
+
+            *Base++ = (vulkan_vertex){Rect->MinX, Rect->MinY, 0.0f, 0.0f, Rect->R, Rect->G, Rect->B, Rect->A};
+            *Base++ = (vulkan_vertex){Rect->MaxX, Rect->MinY, 0.0f, 0.0f, Rect->R, Rect->G, Rect->B, Rect->A};
+            *Base++ = (vulkan_vertex){Rect->MaxX, Rect->MaxY, 0.0f, 0.0f, Rect->R, Rect->G, Rect->B, Rect->A};
+
+            *Base++ = (vulkan_vertex){Rect->MaxX, Rect->MaxY, 0.0f, 0.0f, Rect->R, Rect->G, Rect->B, Rect->A};
+            *Base++ = (vulkan_vertex){Rect->MinX, Rect->MaxY, 0.0f, 0.0f, Rect->R, Rect->G, Rect->B, Rect->A};
+            *Base++ = (vulkan_vertex){Rect->MinX, Rect->MinY, 0.0f, 0.0f, Rect->R, Rect->G, Rect->B, Rect->A};
+
+            VertexCount += 6;
+        }
+    }
+
+    // NOTE(vak): Issue draw
     {
         vulkan_pipeline* Pipeline = &Vulkan.Pipeline;
 
@@ -1283,20 +1300,8 @@ local void VulkanBeginRendering(void)
             DescriptorWrites
         );
 
-        vkCmdDraw(CommandBuffer, 3, 1, 0, 0);
+        vkCmdDraw(CommandBuffer, VertexCount, 1, 0, 0);
     }
-}
-
-local void VulkanEndRendering(void)
-{
-    vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
-
-    // NOTE(vak): Frame resources
-
-    VkCommandBuffer CommandBuffer = Vulkan.CommandBuffers[Vulkan.FlightIndex];
-    VkSemaphore AcquireSemaphore = Vulkan.AcquireSemaphores[Vulkan.FlightIndex];
-    VkSemaphore SubmitSemaphore = Vulkan.SubmitSemaphores[Vulkan.FlightIndex];
-    VkFence DrawFinishedFence = Vulkan.DrawFinishedFences[Vulkan.FlightIndex];
 
     // NOTE(vak): End rendering
     {
