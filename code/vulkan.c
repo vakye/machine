@@ -217,10 +217,9 @@ typedef struct
 
     VkCommandBuffer CommandBuffers[VulkanMaxFlight];
     VkSemaphore AcquireSemaphores[VulkanMaxFlight];
-    VkSemaphore SubmitSemaphores[VulkanMaxFlight];
     VkFence DrawFinishedFences[VulkanMaxFlight];
 
-    // NOTE(vak): Rendering loop state
+    // NOTE(vak): Render state
 
     u32 ImageIndex;
     u32 FlightIndex;
@@ -246,10 +245,10 @@ local void VulkanRecreateSwapchain(void)
         &SurfaceCapabilities
     ));
 
-    AlwaysAssert(VulkanMaxFlight >= SurfaceCapabilities.minImageCount);
-
-    u32 MinImageCount = Minimum(
-        VulkanMaxFlight, SurfaceCapabilities.maxImageCount
+    u32 MinImageCount = Clamp(
+        SurfaceCapabilities.minImageCount,
+        3,
+        SurfaceCapabilities.maxImageCount
     );
 
     Swapchain->SizeX = SurfaceCapabilities.currentExtent.width;
@@ -706,7 +705,9 @@ local void VulkanDeleteBuffer(vulkan_buffer* Buffer)
 }
 
 local void VulkanDeleteRenderer(void);
-local void VulkanRender2D(draw_command_2d* Draw);
+local void VulkanBeginFrame(void);
+local void VulkanDispatchDraw2D(draw_command_2d* Draw);
+local void VulkanEndFrame(void);
 
 local void VulkanMakeRenderer(void)
 {
@@ -714,7 +715,9 @@ local void VulkanMakeRenderer(void)
     {
         RendererFunctions.CurrentAPI     = RendererAPI_Vulkan;
         RendererFunctions.DeleteRenderer = &VulkanDeleteRenderer;
-        RendererFunctions.Render2D       = &VulkanRender2D;
+        RendererFunctions.BeginFrame     = &VulkanBeginFrame;
+        RendererFunctions.DispatchDraw2D = &VulkanDispatchDraw2D;
+        RendererFunctions.EndFrame       = &VulkanEndFrame;
     }
 
     // NOTE(vak): Setup Vulkan and load non-instance functions
@@ -1068,7 +1071,6 @@ local void VulkanMakeRenderer(void)
         for (usize Index = 0; Index < VulkanMaxFlight; Index++)
         {
             VulkanCheck(vkCreateSemaphore(Vulkan.Device, &SemaphoreInfo, 0, &Vulkan.AcquireSemaphores[Index]));
-            VulkanCheck(vkCreateSemaphore(Vulkan.Device, &SemaphoreInfo, 0, &Vulkan.SubmitSemaphores[Index]));
             VulkanCheck(vkCreateFence(Vulkan.Device, &FenceInfo, 0, &Vulkan.DrawFinishedFences[Index]));
         }
     }
@@ -1085,9 +1087,6 @@ local void VulkanDeleteRenderer(void)
 
         if (Vulkan.AcquireSemaphores[Index])
             vkDestroySemaphore(Vulkan.Device, Vulkan.AcquireSemaphores[Index], 0);
-
-        if (Vulkan.SubmitSemaphores[Index])
-            vkDestroySemaphore(Vulkan.Device, Vulkan.SubmitSemaphores[Index], 0);
     }
 
     VulkanDeleteBuffer(&Vulkan.VertexBuffer);
@@ -1122,7 +1121,7 @@ local void VulkanDeleteRenderer(void)
     UnloadVulkan();
 }
 
-local void VulkanRender2D(draw_command_2d* Draw)
+local void VulkanBeginFrame(void)
 {
     vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
 
@@ -1149,18 +1148,7 @@ local void VulkanRender2D(draw_command_2d* Draw)
         }
     }
 
-    // NOTE(vak): Flight resources
-
-    VkCommandBuffer CommandBuffer = Vulkan.CommandBuffers[Vulkan.FlightIndex];
     VkSemaphore AcquireSemaphore = Vulkan.AcquireSemaphores[Vulkan.FlightIndex];
-    VkSemaphore SubmitSemaphore = Vulkan.SubmitSemaphores[Vulkan.FlightIndex];
-    VkFence DrawFinishedFence = Vulkan.DrawFinishedFences[Vulkan.FlightIndex];
-
-    // NOTE(vak): Wait for last draw utilizing this flight's resources
-    {
-        VulkanCheck(vkWaitForFences(Vulkan.Device, 1, &DrawFinishedFence, VK_TRUE, U64Max));
-        VulkanCheck(vkResetFences(Vulkan.Device, 1, &DrawFinishedFence));
-    }
 
     // NOTE(vak): Acquire next image
     {
@@ -1171,6 +1159,35 @@ local void VulkanRender2D(draw_command_2d* Draw)
             AcquireSemaphore,
             0,
             &Vulkan.ImageIndex
+        ));
+    }
+}
+
+local void VulkanDispatchDraw2D(draw_command_2d* Draw)
+{
+    vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
+
+    // NOTE(vak): Flight resources
+
+    VkCommandBuffer CommandBuffer = Vulkan.CommandBuffers[Vulkan.FlightIndex];
+    VkSemaphore AcquireSemaphore = Vulkan.AcquireSemaphores[Vulkan.FlightIndex];
+    VkFence DrawFinishedFence = Vulkan.DrawFinishedFences[Vulkan.FlightIndex];
+
+    // NOTE(vak): Wait for the last draw utilizing this flight's
+    // resources to finish.
+    {
+        VulkanCheck(vkWaitForFences(
+            Vulkan.Device,
+            1,
+            &DrawFinishedFence,
+            VK_TRUE,
+            U64Max
+        ));
+
+        VulkanCheck(vkResetFences(
+            Vulkan.Device,
+            1,
+            &DrawFinishedFence
         ));
     }
 
@@ -1397,11 +1414,34 @@ local void VulkanRender2D(draw_command_2d* Draw)
             .pWaitDstStageMask = &WaitDestinationStages,
             .commandBufferCount = 1,
             .pCommandBuffers = &CommandBuffer,
-            .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &SubmitSemaphore,
         };
 
         VulkanCheck(vkQueueSubmit(Vulkan.Queue, 1, &SubmitInfo, DrawFinishedFence));
+    }
+
+    // NOTE(vak): Advance to next flight
+    {
+        Vulkan.FlightIndex += 1;
+        Vulkan.FlightIndex %= Swapchain->ImageCount;
+    }
+}
+
+local void VulkanEndFrame(void)
+{
+    vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
+
+    // TODO(vak): Find a different way to do this so that we won't
+    // have to wait to record another frame's commands.
+
+    // NOTE(vak): Wait for all draws to finish
+    {
+        VulkanCheck(vkWaitForFences(
+            Vulkan.Device,
+            ArrayCount(Vulkan.DrawFinishedFences),
+            Vulkan.DrawFinishedFences,
+            VK_TRUE,
+            U64Max
+        ));
     }
 
     // NOTE(vak): Present
@@ -1409,19 +1449,11 @@ local void VulkanRender2D(draw_command_2d* Draw)
         VkPresentInfoKHR PresentInfo =
         {
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &SubmitSemaphore,
             .swapchainCount = 1,
             .pSwapchains = &Swapchain->Swapchain,
             .pImageIndices = &Vulkan.ImageIndex,
         };
 
         VulkanCheck(vkQueuePresentKHR(Vulkan.Queue, &PresentInfo));
-    }
-
-    // NOTE(vak): Advance to next frame in flight
-    {
-        Vulkan.FlightIndex += 1;
-        Vulkan.FlightIndex %= Swapchain->ImageCount;
     }
 }

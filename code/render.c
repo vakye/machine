@@ -30,20 +30,26 @@ typedef struct
 } draw_command_2d;
 
 typedef void delete_renderer(void);
-typedef void render_2d(draw_command_2d* Draw);
+typedef void begin_frame(void);
+typedef void dispatch_draw_2d(draw_command_2d* Draw);
+typedef void end_frame(void);
 
 typedef struct
 {
-    renderer_api     CurrentAPI;
+    renderer_api      CurrentAPI;
 
-    delete_renderer* DeleteRenderer;
-    render_2d*       Render2D;
+    delete_renderer*  DeleteRenderer;
+    begin_frame*      BeginFrame;
+    dispatch_draw_2d* DispatchDraw2D;
+    end_frame*        EndFrame;
 } renderer_functions;
 
 local renderer_functions RendererFunctions = {0};
 
 #define DeleteRenderer(...) RendererFunctions.DeleteRenderer(__VA_ARGS__)
-#define Render2D(...)       RendererFunctions.Render2D(__VA_ARGS__)
+#define BeginFrame(...)     RendererFunctions.BeginFrame(__VA_ARGS__)
+#define DispatchDraw2D(...) RendererFunctions.DispatchDraw2D(__VA_ARGS__)
+#define EndFrame(...)       RendererFunctions.EndFrame(__VA_ARGS__)
 
 // ----------------------------------------------------------
 // NOTE(vak): Implementation
