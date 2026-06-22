@@ -22,7 +22,7 @@ void EntryPoint(void)
 
         u32x2 WindowSize = GetWindowSize();
 
-        draw_rect Rects[] =
+        draw_rect_2d Rects[] =
         {
             {
                 100.0f, 100.0f,
@@ -31,17 +31,17 @@ void EntryPoint(void)
             },
         };
 
-        draw_command Command =
+        draw_command_2d Command =
         {
             .Rects = Rects,
             .RectCount = ArrayCount(Rects),
             .Projection = OrthographicProjection(
-                F32x2(0.0f, 0.0f),
-                F32x2(WindowSize.X, WindowSize.Y)
+                F32x2(0.0f, (f32)WindowSize.Y),
+                F32x2((f32)WindowSize.X, 0.0f)
             ),
         };
 
-        Render(&Command);
+        Render2D(&Command);
 
         f32 SecondsElapsed = GetSecondsElapsed(FrameBegin, GetWallClock());
         Wait(TargetSeconds - SecondsElapsed);

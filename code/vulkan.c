@@ -445,7 +445,7 @@ local vulkan_pipeline VulkanCreatePipeline(
         {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
             .polygonMode = VK_POLYGON_MODE_FILL,
-            .cullMode = VK_CULL_MODE_BACK_BIT,
+            .cullMode = VK_CULL_MODE_NONE,
             .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
             .lineWidth = 1.0f,
         };
@@ -706,7 +706,7 @@ local void VulkanDeleteBuffer(vulkan_buffer* Buffer)
 }
 
 local void VulkanDeleteRenderer(void);
-local void VulkanRender(draw_command* Draw);
+local void VulkanRender2D(draw_command_2d* Draw);
 
 local void VulkanMakeRenderer(void)
 {
@@ -714,7 +714,7 @@ local void VulkanMakeRenderer(void)
     {
         RendererFunctions.CurrentAPI     = RendererAPI_Vulkan;
         RendererFunctions.DeleteRenderer = &VulkanDeleteRenderer;
-        RendererFunctions.Render         = &VulkanRender;
+        RendererFunctions.Render2D       = &VulkanRender2D;
     }
 
     // NOTE(vak): Setup Vulkan and load non-instance functions
@@ -1122,7 +1122,7 @@ local void VulkanDeleteRenderer(void)
     UnloadVulkan();
 }
 
-local void VulkanRender(draw_command* Draw)
+local void VulkanRender2D(draw_command_2d* Draw)
 {
     vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
 
@@ -1248,7 +1248,7 @@ local void VulkanRender(draw_command* Draw)
     u32 VertexCount = 0;
 
     {
-        draw_rect* Rects = Draw->Rects;
+        draw_rect_2d* Rects = Draw->Rects;
         usize RectCount = Draw->RectCount;
 
         usize MaxVertexCount = Vulkan.VertexBuffer.Size / sizeof(vulkan_vertex);
@@ -1260,7 +1260,7 @@ local void VulkanRender(draw_command* Draw)
 
         for (usize RectIndex = 0; RectIndex < RectCount; RectIndex++)
         {
-            draw_rect* Rect = Rects + RectIndex;
+            draw_rect_2d* Rect = Rects + RectIndex;
 
             *Base++ = (vulkan_vertex){Rect->MinX, Rect->MinY, 0.0f, 0.0f, Rect->R, Rect->G, Rect->B, Rect->A};
             *Base++ = (vulkan_vertex){Rect->MaxX, Rect->MinY, 0.0f, 0.0f, Rect->R, Rect->G, Rect->B, Rect->A};
