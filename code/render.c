@@ -22,8 +22,15 @@ typedef struct
     f32 R, G, B, A;
 } draw_rect;
 
+typedef struct
+{
+    draw_rect* Rects;
+    usize RectCount;
+    m4x4 Projection;
+} draw_command;
+
 typedef void delete_renderer(void);
-typedef void render(draw_rect* Rects, usize RectCount);
+typedef void render(draw_command* Draw);
 
 typedef struct
 {

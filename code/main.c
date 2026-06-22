@@ -1,5 +1,6 @@
 
 #include "shared.c"
+#include "math.c"
 #include "print.c"
 #include "platform.c"
 #include "render.c"
@@ -19,27 +20,28 @@ void EntryPoint(void)
     {
         PollEvents();
 
-        persist draw_rect Rects[32 * 32] = {0};
+        u32x2 WindowSize = GetWindowSize();
 
-        for (usize Y = 0; Y < 32; Y++)
+        draw_rect Rects[] =
         {
-            for (usize X = 0; X < 32; X++)
             {
-                draw_rect* Rect = Rects + (Y * 32 + X);
+                100.0f, 100.0f,
+                200.0f, 200.0f,
+                1.0f,  0.8f, 0.5f, 1.0f,
+            },
+        };
 
-                Rect->MinX = -0.5f + (X / 32.0f);
-                Rect->MinY = -0.5f + (Y / 32.0f);
-                Rect->MaxX = Rect->MinX + (1.0f / 32.0f);
-                Rect->MaxY = Rect->MinY + (1.0f / 32.0f);
+        draw_command Command =
+        {
+            .Rects = Rects,
+            .RectCount = ArrayCount(Rects),
+            .Projection = OrthographicProjection(
+                F32x2(0.0f, 0.0f),
+                F32x2(WindowSize.X, WindowSize.Y)
+            ),
+        };
 
-                Rect->R = X / 32.0f;
-                Rect->G = Y / 32.0f;
-                Rect->B = 0.0f;
-                Rect->A = 1.0f;
-            }
-        }
-
-        Render(Rects, ArrayCount(Rects));
+        Render(&Command);
 
         f32 SecondsElapsed = GetSecondsElapsed(FrameBegin, GetWallClock());
         Wait(TargetSeconds - SecondsElapsed);

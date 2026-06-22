@@ -38,9 +38,14 @@ typedef usize size_t;
 // necessary for this implementation.
 // ----------------------------------------------------------
 
+// NOTE(vak): Non-instance functions
+
 local PFN_vkGetInstanceProcAddr      vkGetInstanceProcAddr      = {0};
 local PFN_vkCreateInstance           vkCreateInstance           = {0};
 local PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion = {0};
+
+// NOTE(vak): Instance functions that are obtained via
+// vkGetInstanceProcAddr(Instance, "vk...")
 
 #define AllVulkanFunctions(X) \
     X(vkDestroyInstance) \
@@ -116,12 +121,15 @@ local PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion = {0};
     X(vkCmdSetViewport) \
     X(vkCmdSetScissor) \
     X(vkCmdPushDescriptorSet) \
+    X(vkCmdPushConstants) \
     X(vkCmdDraw) \
     X(vkCmdEndRendering) \
     \
     X(vkCmdCopyBuffer) \
     \
     X(vkCmdPipelineBarrier)
+
+// NOTE(vak): Declare vulkan functions
 
 #define DeclareVulkanFunction(Name) \
     local PFN_##Name Name = {0};
@@ -180,6 +188,11 @@ typedef struct
     f32 U, V;
     f32 R, G, B, A;
 } vulkan_vertex;
+
+typedef struct
+{
+    m4x4 Projection;
+} vulkan_shader_globals;
 
 typedef struct
 {
@@ -366,11 +379,20 @@ local vulkan_pipeline VulkanCreatePipeline(
 
     // NOTE(vak): Pipeline layout
     {
+        VkPushConstantRange PushConstantRange =
+        {
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,
+            .offset = 0,
+            .size = sizeof(vulkan_shader_globals),
+        };
+
         VkPipelineLayoutCreateInfo LayoutInfo =
         {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = 1,
             .pSetLayouts = &Pipeline.SetLayout,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &PushConstantRange,
         };
 
         VulkanCheck(vkCreatePipelineLayout(Vulkan.Device, &LayoutInfo, 0, &Pipeline.Layout));
@@ -684,7 +706,7 @@ local void VulkanDeleteBuffer(vulkan_buffer* Buffer)
 }
 
 local void VulkanDeleteRenderer(void);
-local void VulkanRender(draw_rect* Rects, usize RectCount);
+local void VulkanRender(draw_command* Draw);
 
 local void VulkanMakeRenderer(void)
 {
@@ -1021,7 +1043,7 @@ local void VulkanMakeRenderer(void)
     // NOTE(vak): Buffers
     {
         Vulkan.VertexBuffer = VulkanCreateBuffer(
-            MB(128),
+            MB(16),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT|
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|
@@ -1100,7 +1122,7 @@ local void VulkanDeleteRenderer(void)
     UnloadVulkan();
 }
 
-local void VulkanRender(draw_rect* Rects, usize RectCount)
+local void VulkanRender(draw_command* Draw)
 {
     vulkan_swapchain* Swapchain = &Vulkan.Swapchain;
 
@@ -1226,6 +1248,9 @@ local void VulkanRender(draw_rect* Rects, usize RectCount)
     u32 VertexCount = 0;
 
     {
+        draw_rect* Rects = Draw->Rects;
+        usize RectCount = Draw->RectCount;
+
         usize MaxVertexCount = Vulkan.VertexBuffer.Size / sizeof(vulkan_vertex);
         usize MaxRectCount   = MaxVertexCount / 6;
 
@@ -1298,6 +1323,20 @@ local void VulkanRender(draw_rect* Rects, usize RectCount)
             0,
             ArrayCount(DescriptorWrites),
             DescriptorWrites
+        );
+
+        vulkan_shader_globals ShaderGlobals =
+        {
+            .Projection = Draw->Projection,
+        };
+
+        vkCmdPushConstants(
+            CommandBuffer,
+            Pipeline->Layout,
+            VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,
+            0,
+            sizeof(ShaderGlobals),
+            &ShaderGlobals
         );
 
         vkCmdDraw(CommandBuffer, VertexCount, 1, 0, 0);

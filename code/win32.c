@@ -6,6 +6,11 @@
 
 #include <windows.h>
 
+#undef CopyMemory
+#undef ZeroMemory
+#undef MoveMemory
+#undef FillMemory
+
 // ----------------------------------------------------------
 // NOTE(vak): State
 // ----------------------------------------------------------
@@ -149,6 +154,19 @@ local void DeleteWindow(void)
 local b32 IsWindowClosed(void)
 {
     b32 Result = !Win32.IsWindowOpen;
+    return (Result);
+}
+
+local u32x2 GetWindowSize(void)
+{
+    RECT ClientRect;
+    GetClientRect(Win32.Window, &ClientRect);
+
+    u32x2 Result = U32x2(
+        ClientRect.right - ClientRect.left,
+        ClientRect.bottom - ClientRect.top
+    );
+
     return (Result);
 }
 

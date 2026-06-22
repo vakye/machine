@@ -19,6 +19,11 @@ layout(location = 0) out VertexShaderOutput
     vec4 Color;
 } Out;
 
+layout(push_constant) uniform ShaderGlobals
+{
+    mat4 Projection;
+};
+
 void main()
 {
     vertex Vertex = Vertices[gl_VertexIndex];
@@ -27,7 +32,7 @@ void main()
     vec2 TexCoord = vec2(Vertex.U, Vertex.V);
     vec4 Color    = vec4(Vertex.R, Vertex.G, Vertex.B, Vertex.A);
 
-    gl_Position  = vec4(Position, 0.0, 1.0);
+    gl_Position  = Projection * vec4(Position, 0.0, 1.0);
     Out.TexCoord = TexCoord;
     Out.Color    = Color;
 }

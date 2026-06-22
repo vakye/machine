@@ -12,6 +12,7 @@
 local void MakeWindow(string Title, u32 Width, u32 Height);
 local void DeleteWindow(void);
 local b32 IsWindowClosed(void);
+local u32x2 GetWindowSize(void);
 local void SetWindowVisible(b32 Visible);
 
 local u32 GetRefreshRate(void);
